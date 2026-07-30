@@ -1,5 +1,9 @@
 # Adaptive-RAG-Project
 
+[![Tests](https://github.com/1122Louis/Adaptive-RAG-Project/actions/workflows/tests.yml/badge.svg)](https://github.com/1122Louis/Adaptive-RAG-Project/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+
 > An **Adaptive RAG** chat application that decides *how much* retrieval each query actually needs — routing simple questions straight to the model, and running an iterative retrieve → judge → rewrite loop for the ones that need grounding.
 
 ## Highlights
@@ -14,9 +18,9 @@
 
 ## Demo
 
-![Adaptive RAG chat interface](docs/demo.png)
+> **Run it locally:** `marimo run app.py --sandbox` (see [Setup](#setup)). A screenshot walkthrough will be added here.
 
-*The chat window (left) streams the system's live reasoning — routing decision, retrieval, and refinement steps — before appending the final answer. The document-search tab lets you query the embedded corpus directly via neural IR.*
+The chat window streams the system's live reasoning — routing decision, retrieval, and refinement steps — before appending the final answer. The document-search tab lets you query the embedded corpus directly via neural IR.
 
 ## Architecture
 
