@@ -1,0 +1,12 @@
+# Keep the image slim. NOTE: rag.duckdb is intentionally NOT ignored — the
+# prebuilt vector store must ship into the image.
+.venv
+.git
+.github
+__pycache__
+*.py[oc]
+.pytest_cache
+tests
+uv.lock
+deploy
+*.duckdb.wal

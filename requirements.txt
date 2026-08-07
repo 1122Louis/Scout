@@ -1,0 +1,6 @@
+# Runtime dependencies for the hosted (Hugging Face Space) demo.
+# The vector store is shipped prebuilt, so `datasets`/`huggingface-hub`
+# (only needed to BUILD the store) are intentionally omitted to slim the image.
+marimo>=0.23.9
+duckdb>=1.5.3
+ollama>=0.6.2
