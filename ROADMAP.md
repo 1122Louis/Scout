@@ -2,7 +2,7 @@
 
 > **The thesis.** Most RAG systems retrieve for *every* query, blindly. **Scout is an adaptive retrieval agent (agentic RAG)**: it decides *whether* to retrieve, *what* to search for, *where* to look — the user's own documents or the open web — and *how much* to retrieve, judging its own results and looping to refine, then **compressing what it finds to fit the budget** — and it **proves, with numbers, that this saves cost without sacrificing answer quality.**
 >
-> It is an **agent whose job is retrieval** — not a general-purpose agent. Every "agentic" behaviour (routing, self-critique, web traversal, compression) exists to retrieve *better*. Features that would make retrieval just one tool among many (arbitrary tool-calling, code execution, sub-agents) are out of scope (§8) — that line is what keeps Scout focused and defensible.
+> It is an **agent whose job is retrieval** — not a general-purpose agent. Features that would make retrieval just one tool among many (arbitrary tool-calling, code execution, sub-agents) are out of scope (§8).
 >
 > This is a living document: check items off as PRs land. "Done" = the acceptance criteria are demonstrably true.
 
@@ -14,153 +14,163 @@ A reviewer (recruiter, staff engineer, researcher) should be able to open the re
 
 1. **A clear problem and a clear claim** — stated in the README's first paragraph.
 2. **Evidence the claim is true** — an ablation table with real numbers on a recognized benchmark.
-3. **Correct, readable engineering** — a tested core, typed, linted, with the agentic loop actually doing what it says.
-4. **Production instincts** — observability, caching, graceful degradation, CI, a working demo.
+3. **Correct, readable engineering** — a tested core, typed, with the agentic loop actually doing what it says.
+4. **Production instincts** — a clean service API, observability, caching, graceful degradation, CI, a working demo.
 5. **Honesty** — documented limitations and failure cases, not just the happy path.
-
-If any of these five is missing, the project is a demo, not a portfolio piece.
 
 ---
 
-## 2. Current snapshot
+## 2. Current snapshot & the stack pivot
 
-**Solid foundation already in place:**
-- UI-free, testable core (`rag_core.py`) cleanly separated from the marimo UI (`app.py`).
-- Adaptive pipeline (`judge_query → rewrite_query → retrieve → judge_retrieved → generate`) with JSON fallbacks — the agentic loop's skeleton is **already built**.
-- DuckDB VSS/HNSW vector store, sentence-aware chunking, batched Ollama embeddings.
-- Runnable via `uv`; unit tests for parsing/fallbacks; CI (pytest); Dockerfile + HF Spaces scaffold.
+**Today:** a single-process **Python + marimo** prototype — UI-free core (`rag_core.py`) + marimo UI (`app.py`), DuckDB VSS/HNSW store, Ollama models, pytest + CI. The agentic loop's skeleton (`judge → rewrite → retrieve → judge → generate`) is **already built**, but it has correctness bugs, nothing measures it, and it only reads a fixed Wikipedia corpus.
 
-**The gap in one sentence:** the loop *claims* to be adaptive and self-critiquing, **nothing measures whether it helps**, and it only reads a fixed Wikipedia corpus. This roadmap fixes the correctness, proves the claim, and extends the agent to the user's own documents, the open web, and context compression.
+**Target:** a **three-tier polyglot system** (see §Architecture) — a **React/TypeScript** UI, a **Go** service that owns the agent runtime, and **Python** kept as the *offline* evaluation + fine-tuning sidecar. The existing Python loop becomes the **reference implementation** we prove, measure, and then port to Go.
+
+---
+
+## Architecture (target)
+
+```
+┌─────────────────────┐      HTTP / SSE      ┌──────────────────────────────┐
+│   React + TS (UI)   │ ◀──────streaming────▶ │        Go service (API)       │
+│  chat · streaming · │                       │  agentic loop (route→judge→   │
+│  conv view · trace  │                       │  retrieve→summarize→refine) · │
+│  · doc upload       │                       │  DuckDB+VSS · Ollama client · │
+└─────────────────────┘                       │  PDF ingest · web crawler     │
+                                               └──────────────┬───────────────┘
+                                                      same DuckDB store + Ollama
+                                               ┌──────────────▼───────────────┐
+                                               │   Python sidecar (OFFLINE)    │
+                                               │  eval harness (HotpotQA,      │
+                                               │  faithfulness) hits the Go    │
+                                               │  API · QLoRA fine-tuning      │
+                                               └───────────────────────────────┘
+```
+
+- **React/TS** — chat UI, SSE streaming, conversation view, trace panel, document upload. (Replaces marimo, which gave streaming/chat/progress for free — now hand-built.)
+- **Go** — the runtime: agentic loop, DuckDB+VSS vector store (`go-duckdb`), Ollama HTTP client, PDF text extraction, and the concurrent **web crawler** (Go's sweet spot). Single-binary deploy.
+- **Python** — **offline only**: the eval harness (hits the Go API end-to-end — tests the real service) and optional QLoRA training. Never in the request path, so no Go↔Python runtime bridge.
+
+**Decision (change only if you overrule it):** Python stays as the offline eval/training sidecar — reimplementing RAGAS/HotpotQA tooling in Go would weaken the headline for no gain.
 
 ---
 
 ## 3. Guiding principles
 
 1. **Measure the thesis.** "Adaptive" is a hypothesis until an ablation proves it. Numbers go in the README.
-2. **Correct before measured.** Fix the loop bugs first — never publish numbers for a system doing the wrong thing.
+2. **Correct before measured; measured before ported.** Fix the loop and prove it **in Python first** (cheap, already tested) — never gamble the headline on finishing the Go/React rewrite.
 3. **Depth over breadth.** Every addition must strengthen the *retrieval* thesis or it doesn't ship (§8 is the contract).
-4. **Local & correct before live & messy.** The user-document path and eval come before web traversal.
-5. **Keep the core UI-free and testable.** New capability lands in importable modules; the UI only orchestrates.
-6. **Reproducible by a stranger.** Pinned seeds, one-command eval, documented models/hardware.
+4. **Local & correct before live & messy.** User-documents and eval come before web traversal.
+5. **Clean service boundary.** The Go service owns all retrieval/agent logic behind an HTTP/SSE API; React only renders and streams; the Python sidecar hits the same API offline.
+6. **Reproducible by a stranger.** Pinned seeds/versions, one-command eval, documented models/hardware.
 
 ---
 
-## PART A — Foundation (correctness + proof)
+## PART A — Foundation (prove it in Python first)
 
 ### Milestone 1 — Make the engine *correct*
 
-The agentic loop has real bugs that must be fixed before any honest measurement.
+Fix the agentic loop's real bugs in the current Python code — this is the reference implementation we later port to Go.
 
-- [ ] **Accumulate evidence across refine rounds.** `app.py` resets `docs = []` each round, discarding earlier good hits — so the refine loop *loses* context instead of adding to it. Accumulate + dedupe across rounds.
-- [ ] **Global rerank before truncation.** Merge all hits across the N sub-queries, sort by cosine distance globally, *then* take top-K. Today it feeds the first-K-after-dedup.
-- [ ] **Structured LLM outputs.** Replace the regex `_extract_json` with Ollama's `format=`/JSON-schema constrained decoding for `judge_query`, `rewrite_query`, `judge_retrieved`. Keep the fallbacks as a backstop.
-- [ ] **Integration test of the loop** with a fake retriever + fake LLM: routing short-circuits correctly, refine accumulates docs, loop always terminates.
+- [ ] **Accumulate evidence across refine rounds.** `app.py` resets `docs = []` each round, discarding earlier good hits. Accumulate + dedupe across rounds.
+- [ ] **Global rerank before truncation.** Merge all hits across the N sub-queries, sort by cosine distance globally, *then* take top-K.
+- [ ] **Structured LLM outputs.** Replace the regex `_extract_json` with Ollama's `format=`/JSON-schema constrained decoding; keep fallbacks as a backstop.
+- [ ] **Integration test of the loop** (fake retriever + fake LLM): routing short-circuits, refine accumulates, loop always terminates.
 
-**Acceptance:** the refine loop demonstrably grows its evidence set across rounds; final context is the globally-top-K by similarity; an integration test locks the control flow; JSON parsing no longer depends on a regex.
+**Acceptance:** the refine loop grows its evidence set across rounds; final context is the globally-top-K; an integration test locks the control flow.
 
 ### Milestone 2 — Prove it works *(the headline)*
 
-Measure the thesis on **recognized benchmarks** and publish the result. (Pairs with Milestone 7 — tracing supplies the cost numbers.)
+Measure the thesis on **recognized benchmarks** and publish the ablation — all in Python, before the port.
 
-- [ ] **Benchmarks that stress the two claims:** a **HotpotQA** subset (multi-hop → justifies the refine loop) + a routing-stress set (answerable factual Qs mixed with chit-chat/math/reasoning → tests `judge_query`).
-- [ ] **Retrieval metrics:** recall@k, MRR, nDCG vs gold passages.
-- [ ] **Answer metrics:** faithfulness/groundedness + answer-relevance (RAGAS-style or local LLM-judge).
-- [ ] **Cost metrics:** LLM calls, tokens, wall-clock latency per query.
-- [ ] **The ablation** (the money table): `no-RAG` vs `naive always-retrieve` vs `adaptive-routing` vs `adaptive + refine loop`. Quality **and** cost for each.
-- [ ] **Error analysis:** 3–5 concrete failure cases and what they reveal.
-- [ ] **One command, seeded, reproducible:** `uv run python -m eval` → the table. Publish it in the README; backfill the real numbers into the CV bullets.
+- [ ] **Benchmarks:** a **HotpotQA** subset (multi-hop → justifies the refine loop) + a routing-stress set (factual Qs mixed with chit-chat/math → tests `judge_query`).
+- [ ] **Retrieval metrics:** recall@k, MRR, nDCG. **Answer metrics:** faithfulness/groundedness + answer-relevance. **Cost metrics:** LLM calls, tokens, latency.
+- [ ] **The ablation:** `no-RAG` vs `naive always-retrieve` vs `adaptive-routing` vs `adaptive + refine loop` — quality **and** cost.
+- [ ] **Error analysis:** 3–5 failure cases. **Reproducible:** `uv run python -m eval` → the table. Publish it in the README; backfill the CV bullets.
 
-**Acceptance:** a reproducible command produces an ablation table on a named benchmark showing adaptive routing cutting LLM calls at equal answer quality, and the refine loop improving groundedness on multi-hop questions — with failure cases documented.
+**Acceptance:** a reproducible command produces an ablation on a named benchmark showing adaptive routing cutting LLM calls at equal quality, and the refine loop improving groundedness on multi-hop questions.
 
 ---
 
-## PART B — Agentic capabilities (the electives)
+## PART B — Stack swap + agentic capabilities
 
-Three electives chosen because they **share the retrieval pipeline** and reinforce each other — one system, three facets — rather than opening new, unshared axes.
+### Milestone 3 — Stack swap: Go service + React UI
 
-### Milestone 3 — User-provided documents *(Elective: "adaptive RAG over user data")*
+Port the *proven, measured* loop to the target architecture.
 
-Let Scout retrieve over the user's **own** documents, not just Wikipedia.
+- [ ] **Spike first:** confirm DuckDB **VSS/HNSW loads and queries from `go-duckdb`**. If not, keep the vector store as a thin Python service behind the Go API and record the decision here.
+- [ ] **Go service** exposing an HTTP/SSE API: port `judge → rewrite → retrieve → summarize → refine → generate`, DuckDB+VSS access, and the Ollama client. Unit-test the ported logic against the Python reference's expectations.
+- [ ] **React/TS UI:** chat with **SSE streaming**, visible + scrollable history, and the live reasoning/trace stream (the feature marimo gave for free).
+- [ ] **Point the Python eval harness at the Go API** so Milestone 2's ablation now measures the *real* service end-to-end.
 
-- [ ] **Ingestion for `.txt` and `.pdf`** — PDF via text extraction (`pypdf`-style). **Text only — no images/OCR** (that would cross into the multimodal/VLM elective, which is out of scope).
-- [ ] **Upload / point-at-a-folder** in the UI; build or extend the DuckDB store from user docs, reusing `chunk_text` + `embed_many` + the HNSW index. Keep ingestion idempotent.
-- [ ] **Corpus selection** — query the user's docs (and/or the bundled corpus); each chunk carries provenance (source filename) for citations.
+**Acceptance:** the React UI streams answers from the Go service; the Go loop reproduces the Python reference's behaviour; the eval harness runs against the Go API and matches (within tolerance) the pre-port numbers.
 
-**Acceptance:** a user drops in a PDF and a text file, Scout indexes them, and answers a question grounded in them with correct source citations; re-ingesting the same files is a no-op.
+### Milestone 4 — User-provided documents *(elective)*
 
-### Milestone 4 — Context management: summarization + isolation *(Electives: "adaptive RAG summarization" + "intelligent context management")*
+- [ ] **`.txt`/`.pdf` ingestion** in the Go service — PDF via text extraction (**text only — no OCR/images**, which would cross into the multimodal elective).
+- [ ] **Upload in the React UI**; build/extend the DuckDB store, reusing the chunk → embed → HNSW path. Idempotent re-ingest. Each chunk carries source provenance for citations.
 
-Deepens retrieval and is a **two-for-one**: the summarization the adaptive-RAG elective requires *is* the compression the context-management elective requires. Build it once.
+**Acceptance:** a user uploads a PDF + a text file, Scout indexes them, and answers grounded in them with correct source citations; re-ingesting is a no-op.
 
-- [ ] **Context compression / summarization** — compress retrieved chunks before they reach the generator (filter + summarize to the relevant spans). Measure token reduction **and** faithfulness impact in the Milestone 2 eval.
-- [ ] **Context isolation** — keep each sub-query's retrieved context isolated during the refine loop, merged only at generation, so one sub-query's noise can't pollute another's.
+### Milestone 5 — Context management: summarization + isolation *(electives, two-for-one)*
 
-**Acceptance:** compression reduces context tokens by a measurable % at equal-or-better faithfulness (shown in the eval); isolation is demonstrated to prevent cross-contamination between sub-queries.
+- [ ] **Compression / summarization** of retrieved chunks before generation (this *is* the summarization the adaptive-RAG elective requires). Measure token reduction + faithfulness impact in the eval.
+- [ ] **Context isolation** — each sub-query's context kept separate during the refine loop, merged only at generation.
 
-### Milestone 5 — Agentic web retrieval *(Elective: "self-controlled web search + traversal")*
+**Acceptance:** compression cuts context tokens by a measurable % at equal-or-better faithfulness (shown in eval); isolation prevents cross-contamination between sub-queries.
 
-The headline differentiator: the **same loop**, escalated to the open web.
+### Milestone 6 — Agentic web retrieval *(elective — Go's sweet spot)*
 
-- [ ] **Web retriever** — search *and* fetch-and-read actual pages (traverse to the page and extract its content — beyond snippet results), as an alternative retrieval backend.
-- [ ] **Routing generalises** — the router decides **direct / local-corpus / web**, and `judge_retrieved` can **escalate local → web** when the local corpus is insufficient.
-- [ ] **Robustness** — timeouts, rate limits, fetch/parse failures, polite crawling; graceful fallback when the web is unavailable.
-- [ ] **Eval the decision, not the answer** — measure routing accuracy (did it correctly choose web when local lacked the answer?), since live web answers are non-deterministic.
+- [ ] **Concurrent web retriever in Go:** search *and* fetch-and-read real pages (traverse to the page, extract content — beyond snippets), with timeouts, rate limits, polite crawling, and graceful fallback.
+- [ ] **Routing generalises:** router decides **direct / local-corpus / web**; `judge_retrieved` can **escalate local → web** when local context is insufficient.
+- [ ] **Eval the decision, not the answer:** measure routing accuracy (did it choose web when local lacked the answer?), since live web answers are non-deterministic.
 
-**Acceptance:** a question unanswerable from the local corpus triggers a web search that fetches and reads a real page and grounds the answer with the source URL; routing accuracy is measured and reported.
+**Acceptance:** a question unanswerable locally triggers a web search that fetches and reads a real page and grounds the answer with the source URL; routing accuracy is measured.
 
 ---
 
 ## PART C — Hardening & shipping
 
-### Milestone 6 — Robustness & efficiency
+### Milestone 7 — Robustness & efficiency
+- [ ] **Reranking** (cross-encoder or MMR) on top of cosine retrieval; reflected in eval numbers.
+- [ ] **Caching** of query embeddings / retrieval results; measure the win.
+- [ ] **Guardrails** — honest "not in context" on weak retrieval instead of hallucinating.
+- [ ] **Config** — one source of truth across the Go service (kill the `N_ARTICLES` drift and magic numbers).
+- [ ] **Graceful degradation** when Ollama / a model / the web is unavailable.
 
-- [ ] **Reranking** — cross-encoder (or MMR for diversity) on top of cosine retrieval; should move the Milestone 2 numbers.
-- [ ] **Caching** — query embeddings and (optionally) retrieval results; measure the hit-rate / latency win.
-- [ ] **Guardrails** — explicit "I don't know / not in context" on weak retrieval (distance threshold) instead of hallucinating.
-- [ ] **Config consolidation** — one `Config` dataclass/module; kill the `N_ARTICLES` drift (`rag_core.py`=2000 vs `app.py`=1000) and scattered magic numbers.
-- [ ] **Graceful degradation** — deliberate, tested behaviour when Ollama/a model/the web is unavailable.
+### Milestone 8 — Observability
+- [ ] **Per-request trace** (stage, latency, tokens, routing decision direct/local/web, # refine rounds) emitted by the Go service.
+- [ ] **Structured logging** (JSON lines) the eval harness aggregates for cost metrics.
+- [ ] **React trace panel** showing *why* each query was routed/refined/escalated — makes the adaptive behaviour the centrepiece of the demo.
 
-**Acceptance:** reranking is in the pipeline and reflected in eval numbers; a cold vs warm query shows measurable cache benefit; weak-retrieval queries get an honest "not found."
-
-### Milestone 7 — Observability *(start alongside Milestone 2)*
-
-- [ ] **Per-request trace object** — stage, latency, token counts, routing decision (direct/local/web), # refine rounds, chunks retrieved — for every query.
-- [ ] **Structured logging** (JSON lines) the eval harness aggregates for its cost column.
-- [ ] **Surface it in the UI** — extend the existing streamed-reasoning view to show the trace, making the *adaptive* behaviour visible in the demo.
-
-**Acceptance:** every query emits a structured trace; the UI visibly shows *why* a query was routed/refined/escalated; the eval reads traces for cost metrics.
-
-### Milestone 8 — Shippable & legible
-
-- [ ] **CI rigor** — add `ruff` (lint) + `mypy` (types) + coverage to the pytest workflow.
-- [ ] **Packaging / entry point** — a clean console entry (`uvx`-installable or `uv run scout`) so a stranger runs it in one command.
-- [ ] **Fix the live demo** — the Dockerfile claims `rag.duckdb` ships via Git LFS, but it's gitignored with no LFS configured, so the HF free CPU tier would download + embed on boot and time out. Commit the store via real Git LFS, bake it at build, or prebuild in the Dockerfile. **Verify the link actually boots** (or ship a recorded demo).
-- [ ] **README as the front door** — problem → claim → ablation table → architecture diagram → how to reproduce → **documented limitations**; short ADR-style notes on key decisions (why DuckDB, why routing-before-retrieval, why local).
-- [ ] **Demo artifact** — a GIF/short video: a simple query skips retrieval; a hard query triggers the refine loop; an out-of-corpus query escalates to the web — all with the live trace visible.
-
-**Acceptance:** CI green on tests + lint + types; one-command run for a stranger; a working (or recorded) demo link; a README that states the claim, proves it, and admits its limits.
+### Milestone 9 — Shippable & legible
+- [ ] **CI across all three tiers:** Go (`go vet`, `golangci-lint`, `go test`), TS (typecheck + lint), Python (pytest + ruff + mypy).
+- [ ] **Packaging:** Go single-binary that serves the built React static assets; one-command run.
+- [ ] **Deploy:** containerise the Go binary + Ollama; fix the `rag.duckdb` store shipping (the current Dockerfile claims Git LFS but the file is gitignored with no LFS). **Verify the demo link boots** (or ship a recorded demo).
+- [ ] **README front door:** problem → claim → ablation table → architecture diagram → reproduce → **documented limitations** + ADR-style design notes (why Go runtime, why Python eval, why routing-before-retrieval).
+- [ ] **Demo:** a GIF/video — simple query skips retrieval; hard query triggers the refine loop; out-of-corpus query escalates to the web — trace visible throughout.
 
 ---
 
 ## 8. Out of scope — and *why* (deliberate cuts)
 
-These electives would make retrieval just one tool among many, turning Scout from a focused **agentic RAG** system into a general-purpose agent — a different, unfocused, harder-to-defend project. Cut on purpose:
+These would make retrieval just one tool among many, turning Scout from focused **agentic RAG** into an unfocused general agent:
 
-| Cut elective | Why it doesn't serve Scout's thesis |
-|--------------|-------------------------------------|
-| Extensible user tool-calling | Generic agent feature; user-provided *shell* tools drag in the code-sandbox burden as a dependency. |
-| Sub-agent deployment (async) | Orchestration axis orthogonal to retrieval; large concurrency lift. |
-| Secure code execution / sandbox | A whole separate systems project; retrieval is not involved. |
-| Preference optimization (DPO/RLHF + LoRA) | A separate ML-training pipeline; about generation, not retrieval. |
-| Multimodal ingestion (Vision+Language model) | Requires a different model stack; PDF-as-*text* (Milestone 3) stays on the right side of this line. |
-| Concurrent multi-user support | Backend/infra, not thesis. |
-| Advanced prompt caching (H2O) | H2O is KV-cache eviction *inside the inference engine*; **impossible on Ollama's HTTP API** without replacing the serving layer. |
+| Cut elective | Why |
+|--------------|-----|
+| Extensible user tool-calling | Generic agent feature; user *shell* tools drag in the code-sandbox burden. |
+| Sub-agent deployment (async) | Orchestration axis orthogonal to retrieval. |
+| Secure code execution / sandbox | A separate systems project; retrieval not involved. |
+| Preference optimization (DPO/RLHF) | A separate generation-side training pipeline. |
+| Multimodal ingestion (VLM) | Different model stack; PDF-as-*text* (M4) stays on the right side of this line. |
+| Concurrent multi-user | Backend/infra, not thesis. |
+| Advanced prompt caching (H2O) | KV-cache eviction *inside the inference engine* — impossible on Ollama's HTTP API. |
 
 ## 9. Optional stretch (only once Parts A–C are solid)
 
-- **Tree-of-Thought "thinking mode"** — the top backup elective: *adaptive reasoning depth* mirrors *adaptive retrieval depth*. Thematically on-brand, but generation-side (shares no retrieval machinery) and its gain is hard to show on a local 7B model — so it's additive, not reinforcing. Add as a user-toggled mode only after the retrieval bundle is done.
-- **A fine-tuned query-rewriter (QLoRA)** — train a small adapter for `rewrite_query` and show in the ablation that it beats the base model. The one fine-tune that serves the thesis.
-- **A larger / different corpus** to show the pipeline generalises beyond Simple-English Wikipedia.
+- **Tree-of-Thought "thinking mode"** — top backup elective: *adaptive reasoning depth* mirrors *adaptive retrieval depth*, but it's generation-side (shares no retrieval machinery) and hard to show on a local 7B model.
+- **Fine-tuned query-rewriter (QLoRA)** — the one fine-tune that serves the thesis; show it beats the base model in the ablation.
+- **Larger / different corpus** to show generalisation beyond Simple-English Wikipedia.
 
 ---
 
@@ -168,20 +178,21 @@ These electives would make retrieval just one tool among many, turning Scout fro
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| Loop fixes change behaviour mid-eval | Inconsistent numbers | Milestone 1 (correctness) fully precedes Milestone 2 (measurement). |
-| Benchmark adaptation (HotpotQA → local corpus) is fiddly | Slips Milestone 2 | Start with a small subset; index exactly the gold passages. |
-| LLM-judge metrics noisy on a 7B model | Weak eval signal | Use a stronger local judge if available; report variance; spot-check by hand. |
-| PDF text extraction quality varies | Garbage chunks from user docs | Validate extraction; skip/flag unparseable PDFs; keep to text PDFs. |
-| Web traversal is non-deterministic (live pages, rate limits, failures) | Flaky eval + demo | Eval the routing *decision*, not exact answers; cache fetched pages; robust timeouts/fallbacks. |
-| HF free CPU tier too slow for live demo | Broken demo link | Milestone 8 deploy fix; recorded demo as fallback. |
-| Scope creep toward a general agent | Dilutes the thesis | §8 is the contract — revisit only via §9 after Parts A–C are done. |
+| Stack swap balloons scope and the project ships half-done | A polished Python app beats an unfinished rewrite | **Prove in Python (M1–M2) before porting (M3);** frontend can scaffold in parallel. |
+| DuckDB VSS/HNSW not usable from `go-duckdb` | Blocks the Go vector store | Spike it first (M3); fall back to a thin Python vector service behind the Go API. |
+| Rebuilding chat/streaming marimo gave for free | Slips M3 | Use a mature TS AI/streaming lib; keep the first UI minimal. |
+| Polyglot CI/integration complexity | Slows every milestone | Clean HTTP/SSE contract; test each tier independently; one compose file. |
+| Loop fixes change behaviour mid-eval | Inconsistent numbers | M1 precedes M2. |
+| Web traversal non-deterministic (live pages, rate limits) | Flaky eval + demo | Eval the routing *decision*; cache fetched pages; robust timeouts/fallbacks. |
+| HF free CPU tier too slow for live demo | Broken demo link | M9 deploy fix; recorded demo as fallback. |
+| Scope creep toward a general agent | Dilutes the thesis | §8 is the contract. |
 
 ---
 
 ## 11. Execution order
 
-**M1 → M2 (with M7 in parallel) → M3 → M4 → M5 → M6 → M8.**
+**M1 → M2 → M3 → M4 → M5 → M6 → M7 → M8 → M9**, with the **React scaffolding allowed to start in parallel with M2**.
 
-Rationale: correctness first (can't honestly measure a buggy loop); then the eval that *is* the project's value, with tracing (M7) feeding its cost metrics; then the agentic capabilities in **local-before-web** order — user documents (M3), then compression/isolation (M4, which also completes M3's summarization requirement), then the open web (M5, the messy non-deterministic part) last; then robustness/efficiency (M6) quantified by the eval; shipping/docs/demo (M8) to close.
+Rationale: prove the thesis in the cheap, already-tested Python loop (M1–M2) so the headline numbers are locked in; *then* do the impressive three-tier port (M3); then the agentic capabilities in local-before-web order (M4 docs → M5 compression → M6 web, Go's strength, last because it's the messy non-deterministic part); then hardening (M7), observability (M8, which also powers the demo), and shipping (M9).
 
-> **Definition of done:** the README states a clear claim and backs it with a reproducible ablation on a named benchmark; Scout retrieves over the user's own documents and the open web, routing correctly between them; the loop is correct, reranked, compressed, cached, and guarded; every query emits a trace the UI shows; CI is green on tests + lint + types; a working or recorded demo exists; limitations are documented honestly.
+> **Definition of done:** a reproducible ablation on a named benchmark backs a clear claim; Scout runs as a React UI over a Go service, retrieving across the user's documents and the open web and routing correctly between them; the loop is correct, reranked, compressed, cached, guarded; every query emits a trace the UI shows; CI is green across Go + TS + Python; a working or recorded demo exists; limitations are documented.
