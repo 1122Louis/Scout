@@ -1,12 +1,12 @@
 # Scout
 
-### An adaptive, source-routing retrieval engine (agentic RAG)
+### An adaptive retrieval agent (agentic RAG)
 
 [![Tests](https://github.com/1122Louis/Scout/actions/workflows/tests.yml/badge.svg)](https://github.com/1122Louis/Scout/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 
-> **Scout** is an **adaptive retrieval-augmented generation (RAG)** engine that decides *how much* retrieval each query actually needs — and *where* to look — routing simple questions straight to the model, and running an iterative retrieve → judge → rewrite loop for the ones that need grounding.
+> **Scout** is an **adaptive retrieval agent** (agentic RAG) that decides *how much* retrieval each query actually needs — and *where* to look, your own documents or the open web — routing simple questions straight to the model, and running an iterative retrieve → judge → summarize → refine loop for the ones that need grounding.
 
 ## Highlights
 
@@ -105,8 +105,8 @@ MIT
 
 # Scout
 
-**Scout** is an **Adaptive Retrieval-Augmented Generation (RAG)** engine that decides *how much*
-retrieval each query actually needs — instead of blindly searching for every message.
+**Scout** is an **adaptive retrieval agent** (agentic RAG) that decides *how much*
+retrieval each query actually needs — and *where* to look — instead of blindly searching for every message.
 The system routes queries, rewrites them into focused searches, retrieves from a vector
 store, **judges the quality of its own results**, and loops to refine when the retrieved
 context is insufficient.

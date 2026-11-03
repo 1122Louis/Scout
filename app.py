@@ -37,7 +37,7 @@ def _(mo):
         """
         # Scout
 
-        ### An adaptive retrieval engine that decides *how much* retrieval each question needs
+        ### An adaptive retrieval agent that decides *how much* retrieval each question needs
 
         *Routes simple questions straight to the model; runs a retrieve → judge → rewrite loop only when grounding is needed.*
         """

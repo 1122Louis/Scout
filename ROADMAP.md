@@ -1,8 +1,8 @@
 # Scout — Engineering Roadmap
 
-> **The thesis.** Most RAG systems retrieve for *every* query, blindly. **Scout** **decides how much retrieval each query needs — and where to look** — routing simple queries straight to the model, searching a local corpus when grounding is required, and (as it grows) escalating to the open web only when needed — running an iterative *retrieve → self-critique → refine* loop, and **proving, with numbers, that this saves cost without sacrificing answer quality.**
+> **The thesis.** Most RAG systems retrieve for *every* query, blindly. **Scout is an adaptive retrieval agent (agentic RAG)**: it decides *whether* to retrieve, *what* to search for, *where* to look — the user's own documents or the open web — and *how much* to retrieve, judging its own results and looping to refine, then **compressing what it finds to fit the budget** — and it **proves, with numbers, that this saves cost without sacrificing answer quality.**
 >
-> A solid project is **deep on one claim**, not broad on many features. Everything in this roadmap serves that single thesis. Generic chat-app features that don't (multi-conversation UIs, model-switching, fine-tuning) are explicitly out of scope (§8) — cut on purpose, not forgotten.
+> It is an **agent whose job is retrieval** — not a general-purpose agent. Every "agentic" behaviour (routing, self-critique, web traversal, compression) exists to retrieve *better*. Features that would make retrieval just one tool among many (arbitrary tool-calling, code execution, sub-agents) are out of scope (§8) — that line is what keeps Scout focused and defensible.
 >
 > This is a living document: check items off as PRs land. "Done" = the acceptance criteria are demonstrably true.
 
@@ -14,7 +14,7 @@ A reviewer (recruiter, staff engineer, researcher) should be able to open the re
 
 1. **A clear problem and a clear claim** — stated in the README's first paragraph.
 2. **Evidence the claim is true** — an ablation table with real numbers on a recognized benchmark.
-3. **Correct, readable engineering** — a tested core, typed, linted, with the adaptive loop actually doing what it says.
+3. **Correct, readable engineering** — a tested core, typed, linted, with the agentic loop actually doing what it says.
 4. **Production instincts** — observability, caching, graceful degradation, CI, a working demo.
 5. **Honesty** — documented limitations and failure cases, not just the happy path.
 
@@ -26,92 +26,117 @@ If any of these five is missing, the project is a demo, not a portfolio piece.
 
 **Solid foundation already in place:**
 - UI-free, testable core (`rag_core.py`) cleanly separated from the marimo UI (`app.py`).
-- Adaptive pipeline (`judge_query → rewrite_query → retrieve → judge_retrieved → generate`) with JSON fallbacks.
+- Adaptive pipeline (`judge_query → rewrite_query → retrieve → judge_retrieved → generate`) with JSON fallbacks — the agentic loop's skeleton is **already built**.
 - DuckDB VSS/HNSW vector store, sentence-aware chunking, batched Ollama embeddings.
 - Runnable via `uv`; unit tests for parsing/fallbacks; CI (pytest); Dockerfile + HF Spaces scaffold.
 
-**The gap in one sentence:** the system *claims* to be adaptive and self-critiquing, but **nothing measures whether any of it helps**, and the loop has correctness bugs that undercut the claim. That is what this roadmap fixes.
+**The gap in one sentence:** the loop *claims* to be adaptive and self-critiquing, **nothing measures whether it helps**, and it only reads a fixed Wikipedia corpus. This roadmap fixes the correctness, proves the claim, and extends the agent to the user's own documents, the open web, and context compression.
 
 ---
 
 ## 3. Guiding principles
 
 1. **Measure the thesis.** "Adaptive" is a hypothesis until an ablation proves it. Numbers go in the README.
-2. **Correct before measured.** Fix the loop bugs first — never publish numbers for a system that's doing the wrong thing.
-3. **Depth over breadth.** Every addition must strengthen the core claim or it doesn't ship.
-4. **Keep the core UI-free and testable.** New capability lands in importable modules; the UI only orchestrates.
-5. **Reproducible by a stranger.** Pinned seeds, one-command eval, documented models/hardware.
+2. **Correct before measured.** Fix the loop bugs first — never publish numbers for a system doing the wrong thing.
+3. **Depth over breadth.** Every addition must strengthen the *retrieval* thesis or it doesn't ship (§8 is the contract).
+4. **Local & correct before live & messy.** The user-document path and eval come before web traversal.
+5. **Keep the core UI-free and testable.** New capability lands in importable modules; the UI only orchestrates.
+6. **Reproducible by a stranger.** Pinned seeds, one-command eval, documented models/hardware.
 
 ---
 
-## Milestone 1 — Make the engine *correct*
+## PART A — Foundation (correctness + proof)
 
-The adaptive loop has real bugs that must be fixed before any honest measurement.
+### Milestone 1 — Make the engine *correct*
+
+The agentic loop has real bugs that must be fixed before any honest measurement.
 
 - [ ] **Accumulate evidence across refine rounds.** `app.py` resets `docs = []` each round, discarding earlier good hits — so the refine loop *loses* context instead of adding to it. Accumulate + dedupe across rounds.
-- [ ] **Global rerank before truncation.** Merge all hits across the N sub-queries, sort by cosine distance globally, *then* take top-K. Today it feeds the first-K-after-dedup, which may not be the best-K.
-- [ ] **Structured LLM outputs.** Replace the regex `_extract_json` with Ollama's `format=`/JSON-schema constrained decoding for `judge_query`, `rewrite_query`, `judge_retrieved`. Keep the existing fallbacks as a backstop.
-- [ ] **Integration test of the loop** with a fake retriever + fake LLM, asserting: routing short-circuits correctly, refine accumulates docs, loop always terminates.
+- [ ] **Global rerank before truncation.** Merge all hits across the N sub-queries, sort by cosine distance globally, *then* take top-K. Today it feeds the first-K-after-dedup.
+- [ ] **Structured LLM outputs.** Replace the regex `_extract_json` with Ollama's `format=`/JSON-schema constrained decoding for `judge_query`, `rewrite_query`, `judge_retrieved`. Keep the fallbacks as a backstop.
+- [ ] **Integration test of the loop** with a fake retriever + fake LLM: routing short-circuits correctly, refine accumulates docs, loop always terminates.
 
-**Acceptance:** the refine loop demonstrably grows its evidence set across rounds; the final context is the globally-top-K by similarity; an integration test locks the control flow; JSON parsing no longer depends on a regex.
+**Acceptance:** the refine loop demonstrably grows its evidence set across rounds; final context is the globally-top-K by similarity; an integration test locks the control flow; JSON parsing no longer depends on a regex.
 
----
+### Milestone 2 — Prove it works *(the headline)*
 
-## Milestone 2 — Prove it works *(the headline)*
+Measure the thesis on **recognized benchmarks** and publish the result. (Pairs with Milestone 7 — tracing supplies the cost numbers.)
 
-This is what turns a demo into a portfolio piece. Measure the thesis on **recognized benchmarks** and publish the result.
+- [ ] **Benchmarks that stress the two claims:** a **HotpotQA** subset (multi-hop → justifies the refine loop) + a routing-stress set (answerable factual Qs mixed with chit-chat/math/reasoning → tests `judge_query`).
+- [ ] **Retrieval metrics:** recall@k, MRR, nDCG vs gold passages.
+- [ ] **Answer metrics:** faithfulness/groundedness + answer-relevance (RAGAS-style or local LLM-judge).
+- [ ] **Cost metrics:** LLM calls, tokens, wall-clock latency per query.
+- [ ] **The ablation** (the money table): `no-RAG` vs `naive always-retrieve` vs `adaptive-routing` vs `adaptive + refine loop`. Quality **and** cost for each.
+- [ ] **Error analysis:** 3–5 concrete failure cases and what they reveal.
+- [ ] **One command, seeded, reproducible:** `uv run python -m eval` → the table. Publish it in the README; backfill the real numbers into the CV bullets.
 
-- [ ] **Choose benchmarks that stress the two claims:**
-  - **Multi-hop (justifies the refine loop):** a subset of **HotpotQA** — questions that genuinely need iterative retrieval.
-  - **Routing (justifies `judge_query`):** a mix of answerable factual questions + non-retrieval queries (chit-chat / math / reasoning) so routing has something to get right or wrong.
-- [ ] **Retrieval metrics:** recall@k, MRR, nDCG against gold supporting passages.
-- [ ] **Answer metrics:** faithfulness/groundedness + answer-relevance (RAGAS-style or a local LLM-judge — the machinery already exists).
-- [ ] **Cost metrics:** LLM calls, tokens, and wall-clock latency per query (data comes from Milestone 4's tracing).
-- [ ] **The ablation** (the money table): `no-RAG` vs `naive always-retrieve` vs `adaptive-routing` vs `adaptive + refine loop`. Report quality **and** cost for each.
-- [ ] **Error analysis:** a short section with 3–5 concrete failure cases and what they reveal (routing misfires, retrieval misses, judge false-positives). Seniors show where it breaks.
-- [ ] **One-command, seeded, reproducible eval:** `uv run python -m eval` → the table.
-- [ ] **Publish the ablation table in the README** and backfill the real numbers into the CV bullets.
-
-**Acceptance:** a reproducible command produces an ablation table on a named benchmark showing adaptive routing cutting LLM calls on simple queries at equal answer quality, and the refine loop improving groundedness on multi-hop questions — with failure cases documented.
+**Acceptance:** a reproducible command produces an ablation table on a named benchmark showing adaptive routing cutting LLM calls at equal answer quality, and the refine loop improving groundedness on multi-hop questions — with failure cases documented.
 
 ---
 
-## Milestone 3 — Make it *robust & efficient*
+## PART B — Agentic capabilities (the electives)
 
-Production instincts around the proven core.
+Three electives chosen because they **share the retrieval pipeline** and reinforce each other — one system, three facets — rather than opening new, unshared axes.
 
-- [ ] **Reranking:** a cross-encoder reranker (or MMR for diversity) on top of cosine retrieval — the standard next step after bi-encoder retrieval, and it should move the Milestone 2 numbers.
-- [ ] **Caching:** cache query embeddings and (optionally) retrieval results — cuts latency and makes the demo snappy. Measure the hit-rate.
-- [ ] **Guardrails:** explicit "I don't know / not in the provided context" behaviour when retrieval is weak (distance threshold), rather than hallucinating.
-- [ ] **Config consolidation:** one `Config` dataclass/module — kill the `N_ARTICLES` drift (`rag_core.py`=2000 vs `app.py`=1000) and scattered magic numbers.
-- [ ] **Graceful degradation:** clear behaviour when Ollama is down or a model is missing (already partially handled — make it deliberate and tested).
+### Milestone 3 — User-provided documents *(Elective: "adaptive RAG over user data")*
 
-**Acceptance:** reranking is in the pipeline and reflected in eval numbers; a cold vs warm query shows measurable cache benefit; weak-retrieval queries get an honest "not found" instead of a hallucination.
+Let Scout retrieve over the user's **own** documents, not just Wikipedia.
+
+- [ ] **Ingestion for `.txt` and `.pdf`** — PDF via text extraction (`pypdf`-style). **Text only — no images/OCR** (that would cross into the multimodal/VLM elective, which is out of scope).
+- [ ] **Upload / point-at-a-folder** in the UI; build or extend the DuckDB store from user docs, reusing `chunk_text` + `embed_many` + the HNSW index. Keep ingestion idempotent.
+- [ ] **Corpus selection** — query the user's docs (and/or the bundled corpus); each chunk carries provenance (source filename) for citations.
+
+**Acceptance:** a user drops in a PDF and a text file, Scout indexes them, and answers a question grounded in them with correct source citations; re-ingesting the same files is a no-op.
+
+### Milestone 4 — Context management: summarization + isolation *(Electives: "adaptive RAG summarization" + "intelligent context management")*
+
+Deepens retrieval and is a **two-for-one**: the summarization the adaptive-RAG elective requires *is* the compression the context-management elective requires. Build it once.
+
+- [ ] **Context compression / summarization** — compress retrieved chunks before they reach the generator (filter + summarize to the relevant spans). Measure token reduction **and** faithfulness impact in the Milestone 2 eval.
+- [ ] **Context isolation** — keep each sub-query's retrieved context isolated during the refine loop, merged only at generation, so one sub-query's noise can't pollute another's.
+
+**Acceptance:** compression reduces context tokens by a measurable % at equal-or-better faithfulness (shown in the eval); isolation is demonstrated to prevent cross-contamination between sub-queries.
+
+### Milestone 5 — Agentic web retrieval *(Elective: "self-controlled web search + traversal")*
+
+The headline differentiator: the **same loop**, escalated to the open web.
+
+- [ ] **Web retriever** — search *and* fetch-and-read actual pages (traverse to the page and extract its content — beyond snippet results), as an alternative retrieval backend.
+- [ ] **Routing generalises** — the router decides **direct / local-corpus / web**, and `judge_retrieved` can **escalate local → web** when the local corpus is insufficient.
+- [ ] **Robustness** — timeouts, rate limits, fetch/parse failures, polite crawling; graceful fallback when the web is unavailable.
+- [ ] **Eval the decision, not the answer** — measure routing accuracy (did it correctly choose web when local lacked the answer?), since live web answers are non-deterministic.
+
+**Acceptance:** a question unanswerable from the local corpus triggers a web search that fetches and reads a real page and grounds the answer with the source URL; routing accuracy is measured and reported.
 
 ---
 
-## Milestone 4 — Make it *observable*
+## PART C — Hardening & shipping
 
-You also need this data to compute Milestone 2's cost metrics, so it pairs naturally.
+### Milestone 6 — Robustness & efficiency
 
-- [ ] **Per-request trace object:** stage, latency, token counts, routing decision, # refine rounds, chunks retrieved — captured for every query.
-- [ ] **Structured logging** of traces (JSON lines) that the eval harness can aggregate.
-- [ ] **Surface it in the UI:** the marimo app already streams reasoning steps — extend that to show the trace (which decision, how many rounds, latency per stage). This makes the "adaptive" behaviour *visible* in the demo, which is half the pitch.
+- [ ] **Reranking** — cross-encoder (or MMR for diversity) on top of cosine retrieval; should move the Milestone 2 numbers.
+- [ ] **Caching** — query embeddings and (optionally) retrieval results; measure the hit-rate / latency win.
+- [ ] **Guardrails** — explicit "I don't know / not in context" on weak retrieval (distance threshold) instead of hallucinating.
+- [ ] **Config consolidation** — one `Config` dataclass/module; kill the `N_ARTICLES` drift (`rag_core.py`=2000 vs `app.py`=1000) and scattered magic numbers.
+- [ ] **Graceful degradation** — deliberate, tested behaviour when Ollama/a model/the web is unavailable.
 
-**Acceptance:** every query produces a structured trace; the UI visibly shows *why* a query was routed/refined; the eval harness reads traces for its cost column.
+**Acceptance:** reranking is in the pipeline and reflected in eval numbers; a cold vs warm query shows measurable cache benefit; weak-retrieval queries get an honest "not found."
 
----
+### Milestone 7 — Observability *(start alongside Milestone 2)*
 
-## Milestone 5 — Make it *shippable & legible*
+- [ ] **Per-request trace object** — stage, latency, token counts, routing decision (direct/local/web), # refine rounds, chunks retrieved — for every query.
+- [ ] **Structured logging** (JSON lines) the eval harness aggregates for its cost column.
+- [ ] **Surface it in the UI** — extend the existing streamed-reasoning view to show the trace, making the *adaptive* behaviour visible in the demo.
 
-The finishing layer that signals rigor.
+**Acceptance:** every query emits a structured trace; the UI visibly shows *why* a query was routed/refined/escalated; the eval reads traces for cost metrics.
 
-- [ ] **CI rigor:** add `ruff` (lint) + `mypy` (types) + coverage to the existing pytest workflow.
-- [ ] **Packaging / entry point:** a clean console entry (`uvx`-installable or `uv run adaptive-rag`) so a stranger runs it in one command.
-- [ ] **Fix the live demo:** the Dockerfile claims `rag.duckdb` ships via Git LFS, but it's gitignored and no LFS is configured — so the HF Spaces free CPU tier would try to download + embed on boot and time out. Commit the store via real Git LFS, bake it at build, or prebuild in the Dockerfile. **Verify the link actually boots** (or ship a recorded demo if the tier can't sustain it).
-- [ ] **README as the front door:** problem → claim → the ablation table → architecture diagram (extend the existing mermaid) → how to reproduce → **documented limitations**. Add short ADR-style notes on the key design decisions (why DuckDB, why routing-before-retrieval, why local).
-- [ ] **Demo artifact:** a GIF/short video showing a simple query skip retrieval and a hard query trigger the refine loop, with the live trace visible.
-- [ ] **Professional polish:** remove placeholder/jokey naming (e.g. "MachoChat" → "Adaptive RAG").
+### Milestone 8 — Shippable & legible
+
+- [ ] **CI rigor** — add `ruff` (lint) + `mypy` (types) + coverage to the pytest workflow.
+- [ ] **Packaging / entry point** — a clean console entry (`uvx`-installable or `uv run scout`) so a stranger runs it in one command.
+- [ ] **Fix the live demo** — the Dockerfile claims `rag.duckdb` ships via Git LFS, but it's gitignored with no LFS configured, so the HF free CPU tier would download + embed on boot and time out. Commit the store via real Git LFS, bake it at build, or prebuild in the Dockerfile. **Verify the link actually boots** (or ship a recorded demo).
+- [ ] **README as the front door** — problem → claim → ablation table → architecture diagram → how to reproduce → **documented limitations**; short ADR-style notes on key decisions (why DuckDB, why routing-before-retrieval, why local).
+- [ ] **Demo artifact** — a GIF/short video: a simple query skips retrieval; a hard query triggers the refine loop; an out-of-corpus query escalates to the web — all with the live trace visible.
 
 **Acceptance:** CI green on tests + lint + types; one-command run for a stranger; a working (or recorded) demo link; a README that states the claim, proves it, and admits its limits.
 
@@ -119,18 +144,22 @@ The finishing layer that signals rigor.
 
 ## 8. Out of scope — and *why* (deliberate cuts)
 
-These were on the old, assignment-driven roadmap. Removing the assignment, they add surface area without deepening the thesis, so they are **cut on purpose**:
+These electives would make retrieval just one tool among many, turning Scout from a focused **agentic RAG** system into a general-purpose agent — a different, unfocused, harder-to-defend project. Cut on purpose:
 
-| Cut feature | Why it doesn't serve a *focused* project |
-|-------------|------------------------------------------|
-| Multi-conversation management (create/switch/delete/resume) | Generic chat-app plumbing; makes it "another ChatGPT clone," not an adaptive-RAG showcase. |
-| Cross-chat "project folder" memory | A whole second retrieval problem that dilutes the single-corpus thesis. |
-| Model-switching UI | Switching models for a *user* is a feature; switching them for *eval comparison* (Milestone 2) is the useful version — do that instead. |
-| Two fine-tuned LoRA/QLoRA adapters | Large ML lift mostly orthogonal to the thesis. **One** exception worth considering as an optional stretch (§9). |
+| Cut elective | Why it doesn't serve Scout's thesis |
+|--------------|-------------------------------------|
+| Extensible user tool-calling | Generic agent feature; user-provided *shell* tools drag in the code-sandbox burden as a dependency. |
+| Sub-agent deployment (async) | Orchestration axis orthogonal to retrieval; large concurrency lift. |
+| Secure code execution / sandbox | A whole separate systems project; retrieval is not involved. |
+| Preference optimization (DPO/RLHF + LoRA) | A separate ML-training pipeline; about generation, not retrieval. |
+| Multimodal ingestion (Vision+Language model) | Requires a different model stack; PDF-as-*text* (Milestone 3) stays on the right side of this line. |
+| Concurrent multi-user support | Backend/infra, not thesis. |
+| Advanced prompt caching (H2O) | H2O is KV-cache eviction *inside the inference engine*; **impossible on Ollama's HTTP API** without replacing the serving layer. |
 
-## 9. Optional stretch (only if the core is done and polished)
+## 9. Optional stretch (only once Parts A–C are solid)
 
-- **A fine-tuned query-rewriter (QLoRA).** This is the *one* fine-tune that directly serves the thesis: train a small adapter to produce better diverse retrieval queries, then show in the ablation that it beats the base model's `rewrite_query`. Ollama loads LoRA adapters via a `Modelfile` `ADAPTER` directive, so it fits the existing stack. Do this only after Milestones 1–5 are solid.
+- **Tree-of-Thought "thinking mode"** — the top backup elective: *adaptive reasoning depth* mirrors *adaptive retrieval depth*. Thematically on-brand, but generation-side (shares no retrieval machinery) and its gain is hard to show on a local 7B model — so it's additive, not reinforcing. Add as a user-toggled mode only after the retrieval bundle is done.
+- **A fine-tuned query-rewriter (QLoRA)** — train a small adapter for `rewrite_query` and show in the ablation that it beats the base model. The one fine-tune that serves the thesis.
 - **A larger / different corpus** to show the pipeline generalises beyond Simple-English Wikipedia.
 
 ---
@@ -139,18 +168,20 @@ These were on the old, assignment-driven roadmap. Removing the assignment, they 
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| Benchmark adaptation (HotpotQA → local corpus) is fiddly | Slips Milestone 2 | Start with a small, well-defined subset; index exactly the gold passages so retrieval metrics are meaningful. |
-| LLM-judge metrics are noisy on a 7B model | Weak eval signal | Use a stronger judge model locally if available; report variance; cross-check a sample by hand. |
 | Loop fixes change behaviour mid-eval | Inconsistent numbers | Milestone 1 (correctness) fully precedes Milestone 2 (measurement). |
-| HF free CPU tier too slow for live demo | Broken demo link | Milestone 5 deploy fix; recorded demo as fallback. |
-| Scope creep back toward chat-app features | Dilutes the thesis | §8 is the contract — revisit only via §9 after the core is done. |
+| Benchmark adaptation (HotpotQA → local corpus) is fiddly | Slips Milestone 2 | Start with a small subset; index exactly the gold passages. |
+| LLM-judge metrics noisy on a 7B model | Weak eval signal | Use a stronger local judge if available; report variance; spot-check by hand. |
+| PDF text extraction quality varies | Garbage chunks from user docs | Validate extraction; skip/flag unparseable PDFs; keep to text PDFs. |
+| Web traversal is non-deterministic (live pages, rate limits, failures) | Flaky eval + demo | Eval the routing *decision*, not exact answers; cache fetched pages; robust timeouts/fallbacks. |
+| HF free CPU tier too slow for live demo | Broken demo link | Milestone 8 deploy fix; recorded demo as fallback. |
+| Scope creep toward a general agent | Dilutes the thesis | §8 is the contract — revisit only via §9 after Parts A–C are done. |
 
 ---
 
 ## 11. Execution order
 
-**Milestone 1 → 2 → 3 → 4 → 5**, with **4 started alongside 2** (tracing feeds the eval cost metrics).
+**M1 → M2 (with M7 in parallel) → M3 → M4 → M5 → M6 → M8.**
 
-Rationale: correctness first (you can't honestly measure a buggy loop); then the eval that *is* the project's value; then robustness/efficiency improvements that the eval can quantify; observability woven in to power both the metrics and the demo; shipping/docs last.
+Rationale: correctness first (can't honestly measure a buggy loop); then the eval that *is* the project's value, with tracing (M7) feeding its cost metrics; then the agentic capabilities in **local-before-web** order — user documents (M3), then compression/isolation (M4, which also completes M3's summarization requirement), then the open web (M5, the messy non-deterministic part) last; then robustness/efficiency (M6) quantified by the eval; shipping/docs/demo (M8) to close.
 
-> **Definition of done:** the README states a clear claim and backs it with a reproducible ablation on a named benchmark; the adaptive loop is correct, reranked, cached, and guarded; every query emits a trace the UI shows; CI is green on tests + lint + types; a working or recorded demo exists; limitations are documented honestly.
+> **Definition of done:** the README states a clear claim and backs it with a reproducible ablation on a named benchmark; Scout retrieves over the user's own documents and the open web, routing correctly between them; the loop is correct, reranked, compressed, cached, and guarded; every query emits a trace the UI shows; CI is green on tests + lint + types; a working or recorded demo exists; limitations are documented honestly.
