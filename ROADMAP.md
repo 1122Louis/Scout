@@ -1,6 +1,6 @@
-# Adaptive RAG — Engineering Roadmap
+# Scout — Engineering Roadmap
 
-> **The thesis.** Most RAG systems retrieve for *every* query, blindly. This one **decides how much retrieval each query needs** — routing simple queries straight to the model, and running an iterative *retrieve → self-critique → refine* loop only when grounding is required — and **proves, with numbers, that this saves cost without sacrificing answer quality.**
+> **The thesis.** Most RAG systems retrieve for *every* query, blindly. **Scout** **decides how much retrieval each query needs — and where to look** — routing simple queries straight to the model, searching a local corpus when grounding is required, and (as it grows) escalating to the open web only when needed — running an iterative *retrieve → self-critique → refine* loop, and **proving, with numbers, that this saves cost without sacrificing answer quality.**
 >
 > A solid project is **deep on one claim**, not broad on many features. Everything in this roadmap serves that single thesis. Generic chat-app features that don't (multi-conversation UIs, model-switching, fine-tuning) are explicitly out of scope (§8) — cut on purpose, not forgotten.
 >

@@ -8,7 +8,7 @@
 # ]
 # ///
 #
-# Adaptive RAG marimo app.
+# Scout — marimo app.
 # Run with:   marimo edit app.py --sandbox      (or: marimo run app.py --sandbox)
 #
 # Streaming design (works on current marimo's "delta" streaming):
@@ -33,7 +33,15 @@ def _():
 
 @app.cell
 def _(mo):
-    mo.md("# 🔎 Adaptive RAG &nbsp; — chat that decides how much retrieval it needs")
+    mo.md(
+        """
+        # Scout
+
+        ### An adaptive retrieval engine that decides *how much* retrieval each question needs
+
+        *Routes simple questions straight to the model; runs a retrieve → judge → rewrite loop only when grounding is needed.*
+        """
+    )
     return
 
 
@@ -61,7 +69,7 @@ def _(N_ARTICLES, con, mo, rag_core):
     # Later runs: the table already exists, so this is instant.
     if rag_core._table_is_ready(con):
         _n = con.execute("SELECT count(*) FROM chunks").fetchone()[0]
-        setup_status = mo.md(f"✅ **Vector store ready** — {_n} chunks indexed (HNSW, cosine).")
+        setup_status = mo.md(f"**Vector store ready** - {_n} chunks indexed (HNSW, cosine).")
     else:
         with mo.status.progress_bar(
             total=N_ARTICLES, title="Building vector store", subtitle="downloading + embedding"
@@ -72,7 +80,7 @@ def _(N_ARTICLES, con, mo, rag_core):
                 n_articles=N_ARTICLES,
             )
         _n = con.execute("SELECT count(*) FROM chunks").fetchone()[0]
-        setup_status = mo.md(f"✅ **Built vector store** — {_n} chunks indexed (HNSW, cosine).")
+        setup_status = mo.md(f"**Built vector store** - {_n} chunks indexed (HNSW, cosine).")
     setup_status
     return
 
@@ -91,10 +99,10 @@ def _(K, MAX_ROUNDS, N_QUERIES, con, mo, rag_core):
         user_query = messages[-1].content
         yield {"type": "reasoning-start", "id": rid}
 
-        # 1. judge_query — do we even need retrieval?
-        yield status("🤔 Judging whether retrieval is needed…")
+        # 1. judge_query - do we even need retrieval?
+        yield status("Judging whether retrieval is needed...")
         if not rag_core.judge_query(user_query):
-            yield status("💬 No retrieval needed — answering directly.")
+            yield status("No retrieval needed - answering directly.")
             yield {"type": "reasoning-end", "id": rid}
             yield from rag_core.generate_response_stream(user_query)
             return
@@ -104,10 +112,10 @@ def _(K, MAX_ROUNDS, N_QUERIES, con, mo, rag_core):
         current_query = user_query
         docs = []
         for round_i in range(MAX_ROUNDS):
-            yield status(f"✍️ Rewriting into {N_QUERIES} search queries (round {round_i + 1})…")
+            yield status(f"Rewriting into {N_QUERIES} search queries (round {round_i + 1})...")
             queries = rag_core.rewrite_query(current_query, original_query, n=N_QUERIES)
 
-            yield status("🔎 Retrieving for: " + "; ".join(queries))
+            yield status("Retrieving for: " + "; ".join(queries))
             hits = []
             for q in queries:
                 hits.extend(rag_core.retrieve(con, q, k=K))
@@ -119,16 +127,16 @@ def _(K, MAX_ROUNDS, N_QUERIES, con, mo, rag_core):
                     seen.add(d["id"])
                     docs.append(d)
 
-            yield status(f"📚 Retrieved {len(docs)} unique chunks — judging sufficiency…")
+            yield status(f"Retrieved {len(docs)} unique chunks - judging sufficiency...")
             new_queries = rag_core.judge_retrieved(docs, original_query, n=N_QUERIES)
             if new_queries is None:
-                yield status("✅ Context is sufficient.")
+                yield status("Context is sufficient.")
                 break
-            yield status("🔁 Not sufficient — refining queries and retrieving again.")
+            yield status("Not sufficient - refining queries and retrieving again.")
             current_query = " ".join(new_queries)
 
         # 5. final grounded answer, streamed as the conversation message
-        yield status("📝 Generating grounded answer…")
+        yield status("Generating grounded answer...")
         yield {"type": "reasoning-end", "id": rid}
         yield from rag_core.generate_response_stream(original_query, context_docs=docs[:K])
 
@@ -139,14 +147,14 @@ def _(K, MAX_ROUNDS, N_QUERIES, con, mo, rag_core):
 
 @app.cell
 def _(mo):
-    mo.md("### 🗂️ Document search (Neural IR)")
+    mo.md("### Document search (Neural IR)")
     return
 
 
 @app.cell
 def _(mo):
     search_box = mo.ui.text(
-        placeholder="Search the embedded documents…",
+        placeholder="Search the embedded documents...",
         full_width=True,
         label="Query",
     )

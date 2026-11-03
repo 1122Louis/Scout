@@ -1,7 +1,7 @@
 [project]
-name = "adaptive-rag"
+name = "scout"
 version = "0.1.0"
-description = "Adaptive RAG chat app that decides how much retrieval each query needs, running a retrieve-judge-rewrite loop only when grounding is required. Fully local: Ollama + DuckDB (HNSW) + marimo."
+description = "Scout: an adaptive, source-routing retrieval-augmented generation (RAG) engine that decides how much retrieval each query needs — and where to look — running a retrieve-judge-rewrite loop only when grounding is required. Fully local: Ollama + DuckDB (HNSW) + marimo."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

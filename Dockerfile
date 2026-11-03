@@ -1,4 +1,4 @@
-# Hugging Face Spaces (Docker SDK) image for the Adaptive RAG demo.
+# Hugging Face Spaces (Docker SDK) image for the Scout demo.
 # Runs Ollama + a smaller open model (qwen2.5:3b) so it fits the free CPU tier,
 # while keeping retrieval identical (nomic-embed-text + the prebuilt DuckDB store).
 FROM python:3.12-slim

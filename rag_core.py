@@ -1,5 +1,5 @@
 """
-Core logic for the Adaptive RAG app: vector database (DuckDB + VSS/HNSW),
+Core logic for Scout (adaptive RAG engine): vector database (DuckDB + VSS/HNSW),
 chunking, embeddings (Ollama), retrieval, and the four adaptive functions
 (judge_query, rewrite_query, retrieve, judge_retrieved).
 
